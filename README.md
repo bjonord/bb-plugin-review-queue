@@ -30,6 +30,15 @@ bb review-queue teams
 bb review-queue teams set Teamtailor/platform,Teamtailor/opensearch
 ```
 
+## Old team requests
+
+The third column hides team requests that have waited more than 30 days. Use the 7d / 30d / 90d / All toggles in the column header, or:
+
+```
+bb review-queue team-age 90
+bb review-queue team-age all
+```
+
 ## Settings
 
 | Key | Default | Meaning |
@@ -49,6 +58,7 @@ bb plugin reload review-queue
 bb review-queue list [--json]
 bb review-queue refresh [--json]
 bb review-queue teams [set <org/slug>[,<org/slug>...]] [--json]
+bb review-queue team-age <days|all> [--json]
 ```
 
 ## Develop

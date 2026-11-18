@@ -42,6 +42,8 @@ const snapshotSchema = z.object({
   login: z.string().nullable(),
   teams: z.array(z.string()),
   availableTeams: z.array(teamSchema),
+  teamMaxAgeDays: z.number().nullable(),
+  hiddenTeamRequests: z.number(),
   teammateCount: z.number(),
   fetchedAt: z.string().nullable(),
   error: z.string().nullable(),
@@ -53,6 +55,10 @@ export type Snapshot = z.infer<typeof snapshotSchema>;
 export const rpcContract = defineRpcContract({
   queue_get: { input: z.null(), output: snapshotSchema },
   queue_refresh: { input: z.null(), output: snapshotSchema },
+  team_age_set: {
+    input: z.object({ days: z.number().int().min(1).max(3650).nullable() }),
+    output: snapshotSchema,
+  },
   teams_set: {
     input: z.object({ teams: z.array(teamIdSchema).max(20) }),
     output: snapshotSchema,
@@ -161,6 +167,8 @@ export default async function plugin(bb: BbPluginApi) {
   });
   const config = await settings.get();
   let teams: string[] = (await bb.storage.kv.get<string[]>("teams")) ?? [];
+  const storedAge = await bb.storage.kv.get<number | null>("teamMaxAgeDays");
+  let teamMaxAgeDays: number | null = storedAge === undefined ? 30 : storedAge;
   const refreshMs = Math.max(1, Number(config.refreshMinutes) || 5) * 60_000;
   const ghPath = resolveGh();
 
@@ -229,12 +237,14 @@ export default async function plugin(bb: BbPluginApi) {
   let snapshot: Snapshot = {
     login: null,
     availableTeams: [],
+    hiddenTeamRequests: 0,
     teammateCount: 0,
     fetchedAt: null,
     error: null,
     pullRequests: [],
     ...((await bb.storage.kv.get<Snapshot>("snapshot")) ?? {}),
     teams,
+    teamMaxAgeDays,
     refreshing: false,
   };
 
@@ -270,7 +280,7 @@ export default async function plugin(bb: BbPluginApi) {
     const [direct, teamResults] = await Promise.all([
       searchPrs(`${base} user-review-requested:@me`),
       config.includeTeamRequests
-        ? Promise.all(teams.map((team) => searchPrs(`${base} team-review-requested:${team}`)))
+        ? Promise.all(teams.map((team) => searchPrs(`${base} team-review-requested:${team} sort:updated-desc`)))
         : Promise.resolve([]),
     ]);
 
@@ -327,16 +337,24 @@ export default async function plugin(bb: BbPluginApi) {
       .filter((raw) => !directIds.has(raw.id))
       .map((raw) => toPr(raw, "team"))
       .filter((pr) => pr.requestedTeams.some((team) => teamKeys.has(`team:${team}`)));
+    const cutoff =
+      teamMaxAgeDays === null ? null : Date.now() - teamMaxAgeDays * 24 * 60 * 60 * 1000;
+    const recentTeamOnly =
+      cutoff === null
+        ? teamOnly
+        : teamOnly.filter((pr) => new Date(pr.requestedAt ?? pr.createdAt).getTime() >= cutoff);
 
     return {
       login,
       teams,
       availableTeams,
+      teamMaxAgeDays,
+      hiddenTeamRequests: teamOnly.length - recentTeamOnly.length,
       teammateCount: teammates.size,
       fetchedAt: new Date().toISOString(),
       error: null,
       refreshing: false,
-      pullRequests: [...direct.map((raw) => toPr(raw, "you")), ...teamOnly],
+      pullRequests: [...direct.map((raw) => toPr(raw, "you")), ...recentTeamOnly],
     };
   }
 
@@ -373,10 +391,19 @@ export default async function plugin(bb: BbPluginApi) {
     return refresh();
   }
 
+  async function setTeamAge(days: number | null): Promise<Snapshot> {
+    teamMaxAgeDays = days;
+    await bb.storage.kv.set("teamMaxAgeDays", days);
+    publish({ ...snapshot, teamMaxAgeDays: days });
+    if (inFlight) await inFlight;
+    return refresh();
+  }
+
   bb.rpc.register(rpcContract, {
     queue_get: async () => snapshot,
     queue_refresh: () => refresh(),
     teams_set: ({ teams: next }) => setTeams(next),
+    team_age_set: ({ days }) => setTeamAge(days),
   });
 
   bb.background.service("poll", {
@@ -404,6 +431,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb review-queue refresh [--json]  Fetch from GitHub now, then show the queue",
     "  bb review-queue teams [--json]    List your GitHub teams; [x] marks your team",
     "  bb review-queue teams set <org/slug>[,<org/slug>...]  Choose your team (use \"\" to clear)",
+    "  bb review-queue team-age <days|all>  Hide team review requests older than <days>",
   ].join("\n");
 
   function formatPr(pr: PullRequest): string {
@@ -432,6 +460,10 @@ export default async function plugin(bb: BbPluginApi) {
       lines.push("", `${title} (${prs.length})`);
       for (const pr of prs.slice(0, 50)) lines.push(`  ${formatPr(pr)}`);
     }
+    if (snap.hiddenTeamRequests > 0)
+      lines.push(
+        `  (${snap.hiddenTeamRequests} older than ${snap.teamMaxAgeDays} days hidden; bb review-queue team-age all shows them)`,
+      );
     return lines.join("\n");
   }
 
@@ -443,6 +475,11 @@ export default async function plugin(bb: BbPluginApi) {
         name: "list",
         summary: "Show the cached review queue",
         usage: "bb review-queue list [--json]",
+      },
+      {
+        name: "team-age",
+        summary: "Hide team review requests waiting longer than <days>, or show all",
+        usage: "bb review-queue team-age <days|all> [--json]",
       },
       {
         name: "teams",
@@ -459,6 +496,17 @@ export default async function plugin(bb: BbPluginApi) {
       const json = argv.includes("--json");
       const [command, ...args] = argv.filter((arg) => arg !== "--json");
       if (command === "help" || command === "--help") return { exitCode: 0, stdout: usage };
+      if (command === "team-age") {
+        const value = args[0];
+        const days = value === "all" ? null : Number(value);
+        if (args.length !== 1 || (days !== null && (!Number.isInteger(days) || days < 1 || days > 3650)))
+          return { exitCode: 1, stderr: usage };
+        const snap = await setTeamAge(days);
+        return {
+          exitCode: 0,
+          stdout: json ? JSON.stringify(snap) : formatSnapshot(snap),
+        };
+      }
       if (command === "teams") {
         let snap = snapshot;
         if (args[0] === "set") {

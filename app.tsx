@@ -47,7 +47,21 @@ function useQueue() {
     },
     [rpc],
   );
-  return { snapshot, error, refresh, setTeams };
+  const setTeamAge = useCallback(
+    (days: number | null) => {
+      setSnapshot((current) => (current ? { ...current, teamMaxAgeDays: days } : current));
+      rpc.call("team_age_set", { days }).then(
+        (next) => {
+          setSnapshot(next);
+          setError(null);
+        },
+        (cause: unknown) =>
+          setError(cause instanceof Error ? cause.message : String(cause)),
+      );
+    },
+    [rpc],
+  );
+  return { snapshot, error, refresh, setTeams, setTeamAge };
 }
 
 function TeamPicker({
@@ -111,6 +125,45 @@ function oldestFirst(prs: PullRequest[]): PullRequest[] {
   return [...prs].sort((a, b) => waitingSince(a).localeCompare(waitingSince(b)));
 }
 
+const AGE_OPTIONS: { label: string; days: number | null }[] = [
+  { label: "7d", days: 7 },
+  { label: "30d", days: 30 },
+  { label: "90d", days: 90 },
+  { label: "All", days: null },
+];
+
+function AgeFilter({
+  value,
+  onChange,
+}: {
+  value: number | null;
+  onChange: (days: number | null) => void;
+}) {
+  return (
+    <div role="group" aria-label="Hide requests older than" className="ml-auto flex gap-0.5">
+      {AGE_OPTIONS.map((option) => {
+        const on = option.days === value;
+        return (
+          <button
+            key={option.label}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onChange(option.days)}
+            className={cn(
+              "rounded px-1.5 py-px text-[11px] transition-colors",
+              on
+                ? "bg-accent font-medium text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function sections(snapshot: Snapshot) {
   const prs = snapshot.pullRequests;
   return [
@@ -129,7 +182,10 @@ function sections(snapshot: Snapshot) {
     {
       id: "team-requests",
       title: "Team review requests",
-      hint: "Requested from your selected teams, any author.",
+      hint:
+        snapshot.hiddenTeamRequests > 0
+          ? `Requested from your selected teams, any author. ${snapshot.hiddenTeamRequests} older hidden.`
+          : "Requested from your selected teams, any author.",
       prs: oldestFirst(prs.filter((pr) => pr.requestedVia === "team")),
     },
   ];
@@ -254,7 +310,7 @@ function RefreshButton() {
 }
 
 function QueuePage() {
-  const { snapshot, error, setTeams } = useQueue();
+  const { snapshot, error, setTeams, setTeamAge } = useQueue();
   const now = useNow();
   const shownError = error ?? snapshot?.error ?? null;
   return (
@@ -290,6 +346,9 @@ function QueuePage() {
                     <span className="text-xs tabular-nums text-muted-foreground">
                       {section.prs.length}
                     </span>
+                    {section.id === "team-requests" ? (
+                      <AgeFilter value={snapshot.teamMaxAgeDays} onChange={setTeamAge} />
+                    ) : null}
                   </div>
                   <p className="text-xs text-muted-foreground">{section.hint}</p>
                 </div>

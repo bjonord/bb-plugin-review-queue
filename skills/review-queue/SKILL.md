@@ -20,6 +20,7 @@ minutes. It sorts open PRs into three groups:
 | `bb review-queue refresh` | Fetch from GitHub now, then show the queue. |
 | `bb review-queue teams` | List the user's GitHub teams; `[x]` marks the ones that count as their team. |
 | `bb review-queue teams set <org/slug>[,...]` | Choose the user's team. Only do this when the user asks. |
+| `bb review-queue team-age <days\|all>` | Hide team review requests older than `<days>` (default 30). Only do this when the user asks. |
 
 Add `--json` when the output drives code.
 
