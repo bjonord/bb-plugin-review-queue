@@ -94,7 +94,7 @@ function TeamPicker({
               onChange(on ? snapshot.teams.filter((id) => id !== team.id) : [...snapshot.teams, team.id])
             }
             className={cn(
-              "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+              "rounded-full border px-2 py-px text-[11px] leading-5 transition-colors",
               on
                 ? "border-primary bg-primary text-primary-foreground"
                 : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -142,7 +142,7 @@ function AgeFilter({
   onChange: (days: number | null) => void;
 }) {
   return (
-    <div role="group" aria-label="Hide requests older than" className="ml-auto flex gap-0.5">
+    <div role="group" aria-label="Hide requests older than" className="ml-auto flex shrink-0 gap-0.5">
       {AGE_OPTIONS.map((option) => {
         const on = option.days === value;
         return (
@@ -172,22 +172,22 @@ function sections(snapshot: Snapshot) {
     {
       id: "team",
       title: "From your team",
-      hint: "Requested from you by name, or new commits since your review.",
+      hint: "Asks you, or new commits since your review",
       prs: newestFirst(prs.filter((pr) => pr.requestedVia !== "team" && pr.fromTeammate)),
     },
     {
       id: "others",
       title: "From others",
-      hint: "Requested from you by name, or new commits since your review.",
+      hint: "Asks you, or new commits since your review",
       prs: newestFirst(prs.filter((pr) => pr.requestedVia !== "team" && !pr.fromTeammate)),
     },
     {
       id: "team-requests",
-      title: "Team review requests",
+      title: "Team requests",
       hint:
         snapshot.hiddenTeamRequests > 0
-          ? `Requested from your selected teams, any author. ${snapshot.hiddenTeamRequests} older hidden.`
-          : "Requested from your selected teams, any author.",
+          ? `${snapshot.hiddenTeamRequests} older hidden`
+          : "Asks your team, any author",
       prs: newestFirst(prs.filter((pr) => pr.requestedVia === "team")),
     },
   ];
@@ -210,9 +210,20 @@ function compact(value: number): string {
 
 type ChipTone = "neutral" | "good" | "bad" | "warn" | "info";
 
-function Chip({ tone = "neutral", icon, children }: { tone?: ChipTone; icon?: string; children: ReactNode }) {
+function Chip({
+  tone = "neutral",
+  icon,
+  title,
+  children,
+}: {
+  tone?: ChipTone;
+  icon?: string;
+  title?: string;
+  children: ReactNode;
+}) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex items-center gap-1 rounded px-1.5 py-px text-[11px] leading-4",
         tone === "neutral" && "bg-muted text-muted-foreground",
@@ -231,10 +242,14 @@ function Chip({ tone = "neutral", icon, children }: { tone?: ChipTone; icon?: st
 function PrChips({ pr, now }: { pr: PullRequest; now: number }) {
   const staleDays = Math.floor((now - new Date(pr.updatedAt ?? pr.createdAt).getTime()) / DAY_MS);
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+    <div className="mt-2 flex flex-wrap items-center gap-1">
       {pr.requestedVia === "rereview" ? (
-        <Chip tone="info" icon="RotateCcw">
-          New commits since your {pr.myLastReview === "APPROVED" ? "approval" : "review"}
+        <Chip
+          tone="info"
+          icon="RotateCcw"
+          title={`New commits since your ${pr.myLastReview === "APPROVED" ? "approval" : "review"}`}
+        >
+          New commits
         </Chip>
       ) : pr.myLastReview ? (
         <Chip tone="info" icon="RotateCcw">
@@ -272,87 +287,89 @@ function PrChips({ pr, now }: { pr: PullRequest; now: number }) {
       {staleDays >= STALE_DAYS ? (
         <Chip icon="Hourglass">Stale {staleDays}d</Chip>
       ) : null}
-      {pr.requestedVia === "team" && pr.requestedTeams.length > 0 ? (
-        <Chip>via {pr.requestedTeams.map((team) => team.split("/")[1]).join(", ")}</Chip>
-      ) : null}
     </div>
   );
 }
 
-function PrRow({ pr, now }: { pr: PullRequest; now: number }) {
+function PrRow({ pr, now, showVia }: { pr: PullRequest; now: number; showVia: boolean }) {
   const since = waitingSince(pr);
   const stale = now - new Date(since).getTime() > DAY_MS;
   const navigate = useBbNavigate();
   const openInBb = () => navigate.toPluginPanel("queue", { subPath: `pr/${pr.repo}/${pr.number}` });
   const files = pr.changedFiles ?? 0;
+  const repoName = pr.repo.split("/")[1];
+  const teams = pr.requestedTeams.map((team) => team.split("/")[1]).join(", ");
   return (
-    <li
-      className={cn(
-        "py-3",
-        pr.requestedVia === "rereview" && "-ml-3 border-l-2 border-sky-500 pl-2.5",
-      )}
-    >
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-        <span className="truncate font-mono">
-          {pr.repo.split("/")[1]} #{pr.number}
-        </span>
-        <span aria-hidden>·</span>
-        {pr.authorAvatarUrl ? (
-          <img src={pr.authorAvatarUrl} alt="" className="size-4 shrink-0 rounded-full" />
-        ) : null}
-        <span className="truncate">{pr.author}</span>
-        <span aria-hidden>·</span>
-        <span
-          title={`Waiting since ${new Date(since).toLocaleString()}`}
-          className={cn(
-            "shrink-0 tabular-nums",
-            stale && "font-medium text-amber-600 dark:text-amber-400",
-          )}
-        >
-          {age(since, now)}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
-          <span className="rounded border border-border px-1 text-[10px] font-medium">
-            {sizeLabel(pr)}
-          </span>
-          <span className="text-emerald-600 dark:text-emerald-400">+{compact(pr.additions)}</span>
-          <span className="text-destructive">−{compact(pr.deletions)}</span>
-          {files > 0 ? <span>{files === 1 ? "1 file" : `${files} files`}</span> : null}
-        </span>
-      </div>
-      <button
-        type="button"
+    <li>
+      <div
+        role="link"
+        tabIndex={0}
         onClick={openInBb}
-        className="mt-0.5 line-clamp-2 text-left text-sm font-medium leading-snug text-foreground hover:underline"
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openInBb();
+          }
+        }}
+        aria-label={`Review ${pr.repo}#${pr.number}: ${pr.title}`}
+        className={cn(
+          "group relative cursor-pointer rounded-lg border border-border bg-card p-3 transition-colors",
+          "hover:border-foreground/25 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          pr.requestedVia === "rereview" && "border-l-2 border-l-sky-500",
+        )}
       >
-        {pr.title}
-      </button>
-      {pr.excerpt ? (
-        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{pr.excerpt}</p>
-      ) : null}
-      <div className="flex items-end gap-2">
-        <div className="min-w-0 flex-1">
-          <PrChips pr={pr} now={now} />
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-6 px-2 text-xs"
-            onClick={openInBb}
-            aria-label={`Review ${pr.repo}#${pr.number} in bb`}
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="min-w-0 truncate font-mono" title={pr.repo}>
+            {repoName} <span className="text-foreground/70">#{pr.number}</span>
+          </span>
+          <span
+            title={`Waiting since ${new Date(since).toLocaleString()}`}
+            className={cn(
+              "ml-auto shrink-0 tabular-nums",
+              stale && "font-medium text-amber-600 dark:text-amber-400",
+            )}
           >
-            <Icon name="FileDiff" className="size-3.5" />
-            Review
-          </Button>
+            {age(since, now)}
+          </span>
           <UrlLink
             href={pr.url}
             title="Open on GitHub"
             aria-label={`Open ${pr.repo}#${pr.number} on GitHub`}
-            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={(event) => event.stopPropagation()}
+            className="-m-1 shrink-0 rounded p-1 opacity-60 hover:bg-accent hover:opacity-100"
           >
             <Icon name="ExternalLink" className="size-3.5" />
           </UrlLink>
+        </div>
+        <h3 className="mt-1 line-clamp-2 text-sm font-medium leading-snug text-foreground group-hover:underline">
+          {pr.title}
+        </h3>
+        {pr.excerpt ? (
+          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">
+            {pr.excerpt}
+          </p>
+        ) : null}
+        <PrChips pr={pr} now={now} />
+        <div className="mt-2.5 flex items-center gap-2 border-t border-border/60 pt-2 text-[11px] text-muted-foreground">
+          {pr.authorAvatarUrl ? (
+            <img src={pr.authorAvatarUrl} alt="" className="size-4 shrink-0 rounded-full" />
+          ) : null}
+          <span className="min-w-0 truncate" title={pr.author}>
+            {pr.author}
+          </span>
+          {showVia && pr.requestedVia === "team" && teams ? (
+            <span className="min-w-0 truncate" title={`Requested from ${teams}`}>
+              · via {teams}
+            </span>
+          ) : null}
+          <span className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
+            <span className="rounded border border-border px-1 text-[10px] font-medium leading-4">
+              {sizeLabel(pr)}
+            </span>
+            <span className="text-emerald-600 dark:text-emerald-400">+{compact(pr.additions)}</span>
+            <span className="text-destructive">−{compact(pr.deletions)}</span>
+            {files > 0 ? <span>· {files === 1 ? "1 file" : `${files} files`}</span> : null}
+          </span>
         </div>
       </div>
     </li>
@@ -427,24 +444,28 @@ function QueueList() {
           <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-3">
             {sections(snapshot).map((section) => (
               <section key={section.id} className="min-w-0">
-                <div className="mb-2">
-                  <div className="flex items-baseline gap-2">
+                <div className="mb-2.5">
+                  <div className="flex items-center gap-2">
                     <h2 className="text-sm font-semibold">{section.title}</h2>
-                    <span className="text-xs tabular-nums text-muted-foreground">
+                    <span className="rounded-full bg-muted px-1.5 text-[11px] font-medium tabular-nums leading-5 text-muted-foreground">
                       {section.prs.length}
                     </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-2">
+                    <p className="min-w-0 truncate text-xs text-muted-foreground" title={section.hint}>
+                      {section.hint}
+                    </p>
                     {section.id === "team-requests" ? (
                       <AgeFilter value={snapshot.teamMaxAgeDays} onChange={setTeamAge} />
                     ) : null}
                   </div>
-                  <p className="text-xs text-muted-foreground">{section.hint}</p>
                 </div>
                 {section.prs.length === 0 ? (
                   <EmptyState>Nothing waiting.</EmptyState>
                 ) : (
-                  <ul className="divide-y divide-border rounded-lg border border-border bg-card px-3">
+                  <ul className="space-y-2">
                     {section.prs.map((pr) => (
-                      <PrRow key={pr.id} pr={pr} now={now} />
+                      <PrRow key={pr.id} pr={pr} now={now} showVia={snapshot.teams.length > 1} />
                     ))}
                   </ul>
                 )}

@@ -132,6 +132,7 @@ function ReviewBox({
             size="sm"
             onClick={() => submit("APPROVE")}
             disabled={pending !== null || sent?.state === "APPROVED"}
+            className="bg-emerald-600 text-white hover:bg-emerald-700"
           >
             <Icon name="Check" className="size-4" />
             {pending === "APPROVE" ? "Approving…" : sent?.state === "APPROVED" ? "Approved" : "Approve"}
@@ -246,12 +247,15 @@ export function PrReviewPage({ repo, number }: { repo: string; number: number })
             <>
               <header className="space-y-1">
                 <h1 className="text-lg font-semibold leading-snug">{detail.title}</h1>
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground">
                   <span className="font-mono">
                     {detail.repo}#{detail.number}
                   </span>
                   <span>@{detail.author}</span>
-                  <span className="font-mono">
+                  <span
+                    className="max-w-[28rem] truncate rounded bg-muted px-1.5 py-px font-mono text-[11px]"
+                    title={`${detail.headRef} → ${detail.baseRef}`}
+                  >
                     {detail.headRef} → {detail.baseRef}
                   </span>
                   <span>
@@ -274,7 +278,7 @@ export function PrReviewPage({ repo, number }: { repo: string; number: number })
                 </div>
               </header>
               {detail.body.trim() !== "" ? (
-                <details className="rounded-lg border border-border bg-card px-4 py-3">
+                <details open className="rounded-lg border border-border bg-card px-4 py-3">
                   <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                     Description
                   </summary>
