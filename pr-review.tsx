@@ -97,7 +97,12 @@ function ReviewBox({
         (result) => {
           setBody("");
           if (event === "APPROVE") {
+            // Inline styles, because the toast renders in bb's portal where this
+            // plugin's Tailwind classes do not apply.
             toast.success(`Approved ${detail.repo}#${detail.number}`, {
+              richColors: true,
+              style: { background: "#15803d", borderColor: "#15803d", color: "#ffffff" },
+              actionButtonStyle: { background: "#ffffff", color: "#15803d" },
               action: { label: "View", onClick: () => navigate.openUrl(result.url) },
             });
             navigate.toPluginPanel("queue");
