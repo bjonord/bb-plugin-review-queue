@@ -345,6 +345,13 @@ export default async function plugin(bb: BbPluginApi) {
     if (body !== "") args.push("-f", `body=${body}`);
     const out = await gh([...args, "--jq", "{state, url: .html_url}"]);
     bb.log.info(`review ${input.event} on ${input.repo}#${input.number}`);
+    if (input.event === "APPROVE")
+      publish({
+        ...snapshot,
+        pullRequests: snapshot.pullRequests.filter(
+          (pr) => !(pr.repo === input.repo && pr.number === input.number),
+        ),
+      });
     void refresh();
     return JSON.parse(out) as { state: string; url: string };
   }

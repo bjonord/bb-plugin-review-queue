@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   Markdown,
   UrlLink,
@@ -95,6 +96,13 @@ function ReviewBox({
       .then(
         (result) => {
           setBody("");
+          if (event === "APPROVE") {
+            toast.success(`Approved ${detail.repo}#${detail.number}`, {
+              action: { label: "View", onClick: () => navigate.openUrl(result.url) },
+            });
+            navigate.toPluginPanel("queue");
+            return;
+          }
           setSent(result);
           onDone();
         },
