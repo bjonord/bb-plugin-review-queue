@@ -121,8 +121,8 @@ function age(iso: string, now: number): string {
   return `${Math.floor(hours / 24)}d`;
 }
 
-function oldestFirst(prs: PullRequest[]): PullRequest[] {
-  return [...prs].sort((a, b) => waitingSince(a).localeCompare(waitingSince(b)));
+function newestFirst(prs: PullRequest[]): PullRequest[] {
+  return [...prs].sort((a, b) => waitingSince(b).localeCompare(waitingSince(a)));
 }
 
 const AGE_OPTIONS: { label: string; days: number | null }[] = [
@@ -171,13 +171,13 @@ function sections(snapshot: Snapshot) {
       id: "team",
       title: "From your team",
       hint: "Your review is requested directly.",
-      prs: oldestFirst(prs.filter((pr) => pr.requestedVia === "you" && pr.fromTeammate)),
+      prs: newestFirst(prs.filter((pr) => pr.requestedVia === "you" && pr.fromTeammate)),
     },
     {
       id: "others",
       title: "From others",
       hint: "Your review is requested directly.",
-      prs: oldestFirst(prs.filter((pr) => pr.requestedVia === "you" && !pr.fromTeammate)),
+      prs: newestFirst(prs.filter((pr) => pr.requestedVia === "you" && !pr.fromTeammate)),
     },
     {
       id: "team-requests",
@@ -186,7 +186,7 @@ function sections(snapshot: Snapshot) {
         snapshot.hiddenTeamRequests > 0
           ? `Requested from your selected teams, any author. ${snapshot.hiddenTeamRequests} older hidden.`
           : "Requested from your selected teams, any author.",
-      prs: oldestFirst(prs.filter((pr) => pr.requestedVia === "team")),
+      prs: newestFirst(prs.filter((pr) => pr.requestedVia === "team")),
     },
   ];
 }

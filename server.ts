@@ -458,7 +458,10 @@ export default async function plugin(bb: BbPluginApi) {
     if (snap.error) lines.push(`Error: ${snap.error}`);
     for (const [title, prs] of groups) {
       lines.push("", `${title} (${prs.length})`);
-      for (const pr of prs.slice(0, 50)) lines.push(`  ${formatPr(pr)}`);
+      const newestFirst = [...prs].sort((a, b) =>
+        (b.requestedAt ?? b.createdAt).localeCompare(a.requestedAt ?? a.createdAt),
+      );
+      for (const pr of newestFirst.slice(0, 50)) lines.push(`  ${formatPr(pr)}`);
     }
     if (snap.hiddenTeamRequests > 0)
       lines.push(
