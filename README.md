@@ -51,7 +51,7 @@ bb review-queue team-age all
 | --- | --- | --- |
 | `includeTeamRequests` | `true` | Show the third column. |
 | `includeDrafts` | `false` | Include draft PRs. |
-| `refreshMinutes` | `5` | How often to poll GitHub. |
+| `refreshMinutes` | `5` | Longest time between two full refreshes. A new PR notification on GitHub triggers one sooner (checked once a minute), and so does opening the page when the data is over a minute old. |
 
 ```
 bb plugin config review-queue set includeDrafts true

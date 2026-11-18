@@ -119,6 +119,7 @@ export const QUEUE_CHANGED = "queue-changed";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const REREVIEW_WINDOW_DAYS = 14;
+const STALE_ON_OPEN_MS = 60_000;
 
 const SEARCH_QUERY = `
 query($q: String!, $me: String!) {
@@ -557,9 +558,11 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   let inFlight: Promise<Snapshot> | null = null;
+  let lastRefreshAttempt = 0;
 
   function refresh(): Promise<Snapshot> {
     if (inFlight) return inFlight;
+    lastRefreshAttempt = Date.now();
     publish({ ...snapshot, refreshing: true });
     inFlight = fetchQueue()
       .catch((error: unknown): Snapshot => {
@@ -598,13 +601,51 @@ export default async function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(rpcContract, {
-    queue_get: async () => snapshot,
+    queue_get: async () => {
+      if (Date.now() - lastRefreshAttempt > STALE_ON_OPEN_MS) void refresh();
+      return snapshot;
+    },
     queue_refresh: () => refresh(),
     teams_set: ({ teams: next }) => setTeams(next),
     team_age_set: ({ days }) => setTeamAge(days),
     pr_detail: ({ repo, number }) => prDetail(repo, number),
     pr_review: (input) => submitReview(input),
   });
+
+  // GitHub asks clients to poll notifications at most once a minute
+  // (X-Poll-Interval: 60). A new PR notification triggers a full refresh;
+  // otherwise the full refresh runs every refreshMinutes as a backstop.
+  const WATCH_MS = 60_000;
+  let lastNotificationCheck = new Date().toISOString();
+  let notificationsBroken = false;
+
+  async function prActivitySince(since: string): Promise<boolean> {
+    const out = await gh([
+      "api",
+      `notifications?all=true&per_page=50&since=${encodeURIComponent(since)}`,
+      "--jq",
+      '[.[] | select(.subject.type == "PullRequest")] | length',
+    ]);
+    return Number(out.trim()) > 0;
+  }
+
+  async function tick() {
+    if (Date.now() - lastRefreshAttempt >= refreshMs) {
+      lastNotificationCheck = new Date().toISOString();
+      await refresh();
+      return;
+    }
+    if (notificationsBroken) return;
+    const checkStartedAt = new Date().toISOString();
+    try {
+      const changed = await prActivitySince(lastNotificationCheck);
+      lastNotificationCheck = checkStartedAt;
+      if (changed) await refresh();
+    } catch (error) {
+      notificationsBroken = true;
+      bb.log.warn(`notifications check failed, using the full refresh only: ${String(error)}`);
+    }
+  }
 
   bb.background.service("poll", {
     async start(signal) {
@@ -613,12 +654,12 @@ export default async function plugin(bb: BbPluginApi) {
       );
       while (!signal.aborted) {
         // A GitHub fetch can outlast bb's stop window, so never block the stop on it.
-        await Promise.race([refresh(), aborted]);
+        await Promise.race([tick(), aborted]);
         if (signal.aborted) break;
         let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, refreshMs);
+            timer = setTimeout(resolve, WATCH_MS);
           }),
           aborted,
         ]);

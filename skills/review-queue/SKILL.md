@@ -5,8 +5,10 @@ description: List open GitHub pull requests waiting for the user's review with t
 
 # Review queue
 
-The Review Queue plugin polls GitHub with the user's `gh` login every few
-minutes. It sorts open PRs into three groups:
+The Review Queue plugin reads GitHub with the user's `gh` login. It checks
+GitHub notifications once a minute and refreshes when PR activity appears,
+with a full refresh at least every 5 minutes. It sorts open PRs into three
+groups:
 
 1. From your team: review requested from the user by name, author is in a configured team.
 2. From others: review requested from the user by name, any other author.
