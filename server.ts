@@ -24,9 +24,24 @@ const prSchema = z.object({
 });
 export type PullRequest = z.infer<typeof prSchema>;
 
+const teamSchema = z.object({
+  id: z.string(),
+  org: z.string(),
+  name: z.string(),
+  members: z.number(),
+});
+export type Team = z.infer<typeof teamSchema>;
+
+const teamIdSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[\w.-]+\/[\w.-]+$/);
+
 const snapshotSchema = z.object({
   login: z.string().nullable(),
   teams: z.array(z.string()),
+  availableTeams: z.array(teamSchema),
   teammateCount: z.number(),
   fetchedAt: z.string().nullable(),
   error: z.string().nullable(),
@@ -38,6 +53,10 @@ export type Snapshot = z.infer<typeof snapshotSchema>;
 export const rpcContract = defineRpcContract({
   queue_get: { input: z.null(), output: snapshotSchema },
   queue_refresh: { input: z.null(), output: snapshotSchema },
+  teams_set: {
+    input: z.object({ teams: z.array(teamIdSchema).max(20) }),
+    output: snapshotSchema,
+  },
 });
 
 export const QUEUE_CHANGED = "queue-changed";
@@ -111,13 +130,6 @@ function checksState(raw: RawPr): PullRequest["checks"] {
   return "pending";
 }
 
-function parseTeams(value: string): string[] {
-  return value
-    .split(/[\s,]+/)
-    .map((team) => team.trim().toLowerCase())
-    .filter((team) => /^[\w.-]+\/[\w.-]+$/.test(team));
-}
-
 // The bb server can start without a login shell PATH, so look in the usual
 // install locations before falling back to plain "gh".
 function resolveGh(): string {
@@ -129,13 +141,6 @@ function resolveGh(): string {
 
 export default async function plugin(bb: BbPluginApi) {
   const settings = bb.settings.define({
-    teams: {
-      type: "string",
-      label: "Teams",
-      description:
-        "GitHub teams whose members count as your team, as org/slug, comma separated.",
-      default: "Teamtailor/platform",
-    },
     includeTeamRequests: {
       type: "boolean",
       label: "Show team requests from teammates",
@@ -155,7 +160,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
   const config = await settings.get();
-  const teams = parseTeams(String(config.teams ?? ""));
+  let teams: string[] = (await bb.storage.kv.get<string[]>("teams")) ?? [];
   const refreshMs = Math.max(1, Number(config.refreshMinutes) || 5) * 60_000;
   const ghPath = resolveGh();
 
@@ -198,8 +203,32 @@ export default async function plugin(bb: BbPluginApi) {
       .filter(Boolean);
   }
 
+  async function myTeams(): Promise<Team[]> {
+    const out = await gh([
+      "api",
+      "--paginate",
+      "user/teams",
+      "--jq",
+      ".[] | {org: .organization.login, slug, name, members: .members_count}",
+    ]);
+    return out
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => {
+        const raw = JSON.parse(line) as { org: string; slug: string; name: string; members: number };
+        return {
+          id: `${raw.org}/${raw.slug}`.toLowerCase(),
+          org: raw.org,
+          name: raw.name,
+          members: raw.members,
+        };
+      })
+      .sort((a, b) => a.members - b.members || a.id.localeCompare(b.id));
+  }
+
   let snapshot: Snapshot = {
     login: null,
+    availableTeams: [],
     teammateCount: 0,
     fetchedAt: null,
     error: null,
@@ -221,6 +250,10 @@ export default async function plugin(bb: BbPluginApi) {
     const draft = config.includeDrafts ? "" : " draft:false";
     const base = `is:pr is:open archived:false${draft}`;
 
+    const availableTeams = await myTeams().catch((error: unknown) => {
+      bb.log.warn(`team list lookup failed: ${String(error)}`);
+      return snapshot.availableTeams;
+    });
     const memberLists = await Promise.all(
       teams.map((team) =>
         teamMembers(team).catch((error: unknown) => {
@@ -298,6 +331,7 @@ export default async function plugin(bb: BbPluginApi) {
     return {
       login,
       teams,
+      availableTeams,
       teammateCount: teammates.size,
       fetchedAt: new Date().toISOString(),
       error: null,
@@ -331,9 +365,18 @@ export default async function plugin(bb: BbPluginApi) {
     return inFlight;
   }
 
+  async function setTeams(next: string[]): Promise<Snapshot> {
+    teams = [...new Set(next)];
+    await bb.storage.kv.set("teams", teams);
+    publish({ ...snapshot, teams });
+    if (inFlight) await inFlight;
+    return refresh();
+  }
+
   bb.rpc.register(rpcContract, {
     queue_get: async () => snapshot,
     queue_refresh: () => refresh(),
+    teams_set: ({ teams: next }) => setTeams(next),
   });
 
   bb.background.service("poll", {
@@ -359,6 +402,8 @@ export default async function plugin(bb: BbPluginApi) {
     "Usage:",
     "  bb review-queue [list] [--json]   Show open PRs waiting for your review",
     "  bb review-queue refresh [--json]  Fetch from GitHub now, then show the queue",
+    "  bb review-queue teams [--json]    List your GitHub teams; [x] marks your team",
+    "  bb review-queue teams set <org/slug>[,<org/slug>...]  Choose your team (use \"\" to clear)",
   ].join("\n");
 
   function formatPr(pr: PullRequest): string {
@@ -400,6 +445,11 @@ export default async function plugin(bb: BbPluginApi) {
         usage: "bb review-queue list [--json]",
       },
       {
+        name: "teams",
+        summary: "List your GitHub teams, or choose which count as your team",
+        usage: "bb review-queue teams [set <org/slug>[,<org/slug>...]] [--json]",
+      },
+      {
         name: "refresh",
         summary: "Fetch from GitHub now, then show the queue",
         usage: "bb review-queue refresh [--json]",
@@ -407,8 +457,32 @@ export default async function plugin(bb: BbPluginApi) {
     ],
     async run(argv) {
       const json = argv.includes("--json");
-      const [command] = argv.filter((arg) => arg !== "--json");
+      const [command, ...args] = argv.filter((arg) => arg !== "--json");
       if (command === "help" || command === "--help") return { exitCode: 0, stdout: usage };
+      if (command === "teams") {
+        let snap = snapshot;
+        if (args[0] === "set") {
+          const parsed = z
+            .array(teamIdSchema)
+            .safeParse(args.slice(1).join(",").split(/[\s,]+/).filter(Boolean));
+          if (!parsed.success) return { exitCode: 1, stderr: usage };
+          snap = await setTeams(parsed.data);
+        } else if (args.length > 0) {
+          return { exitCode: 1, stderr: usage };
+        } else if (snap.availableTeams.length === 0) {
+          snap = await refresh();
+        }
+        const selected = new Set(snap.teams);
+        const text = snap.availableTeams
+          .map((team) => `[${selected.has(team.id) ? "x" : " "}] ${team.id}  ${team.name} (${team.members})`)
+          .join("\n");
+        return {
+          exitCode: 0,
+          stdout: json
+            ? JSON.stringify({ teams: snap.teams, availableTeams: snap.availableTeams })
+            : text || "No GitHub teams found.",
+        };
+      }
       if (command !== undefined && command !== "list" && command !== "refresh")
         return { exitCode: 1, stderr: usage };
       const snap = command === "refresh" ? await refresh() : snapshot;

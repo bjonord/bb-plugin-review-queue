@@ -33,7 +33,65 @@ function useQueue() {
   useEffect(() => load("queue_get"), [load]);
   useRealtime("queue-changed", () => load("queue_get"));
   const refresh = useCallback(() => load("queue_refresh"), [load]);
-  return { snapshot, error, refresh };
+  const setTeams = useCallback(
+    (teams: string[]) => {
+      setSnapshot((current) => (current ? { ...current, teams } : current));
+      rpc.call("teams_set", { teams }).then(
+        (next) => {
+          setSnapshot(next);
+          setError(null);
+        },
+        (cause: unknown) =>
+          setError(cause instanceof Error ? cause.message : String(cause)),
+      );
+    },
+    [rpc],
+  );
+  return { snapshot, error, refresh, setTeams };
+}
+
+function TeamPicker({
+  snapshot,
+  onChange,
+}: {
+  snapshot: Snapshot;
+  onChange: (teams: string[]) => void;
+}) {
+  const selected = new Set(snapshot.teams);
+  if (snapshot.availableTeams.length === 0) return null;
+  const orgCounts = new Map<string, number>();
+  for (const team of snapshot.availableTeams)
+    orgCounts.set(team.org, (orgCounts.get(team.org) ?? 0) + 1);
+  const primaryOrg = [...orgCounts].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="mr-1 text-xs text-muted-foreground">Your team:</span>
+      {snapshot.availableTeams.map((team) => {
+        const on = selected.has(team.id);
+        return (
+          <button
+            key={team.id}
+            type="button"
+            aria-pressed={on}
+            title={`${team.id}, ${team.members} members`}
+            onClick={() =>
+              onChange(on ? snapshot.teams.filter((id) => id !== team.id) : [...snapshot.teams, team.id])
+            }
+            className={cn(
+              "rounded-full border px-2.5 py-0.5 text-xs transition-colors",
+              on
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            {team.org !== primaryOrg ? `${team.org}/` : ""}
+            {team.name}
+            <span className="ml-1 tabular-nums opacity-70">{team.members}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 function waitingSince(pr: PullRequest): string {
@@ -196,7 +254,7 @@ function RefreshButton() {
 }
 
 function QueuePage() {
-  const { snapshot, error } = useQueue();
+  const { snapshot, error, setTeams } = useQueue();
   const now = useNow();
   const shownError = error ?? snapshot?.error ?? null;
   return (
@@ -205,10 +263,16 @@ function QueuePage() {
         <p className="text-xs text-muted-foreground">
           {snapshot?.login ? `@${snapshot.login}` : "Loading…"}
           {snapshot && snapshot.teams.length > 0
-            ? ` · team: ${snapshot.teams.join(", ")} (${snapshot.teammateCount} people)`
+            ? ` · ${snapshot.teammateCount} teammates`
             : ""}
           {snapshot?.fetchedAt ? ` · updated ${age(snapshot.fetchedAt, now)} ago` : ""}
         </p>
+        {snapshot ? <TeamPicker snapshot={snapshot} onChange={setTeams} /> : null}
+        {snapshot && snapshot.availableTeams.length > 0 && snapshot.teams.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Pick one or more teams above to fill the team columns.
+          </p>
+        ) : null}
         {shownError ? (
           <p role="alert" className="text-sm text-destructive">
             {shownError}

@@ -21,17 +21,25 @@ npm install
 bb plugin install .
 ```
 
+## Your team
+
+The page lists your GitHub teams as toggles. Click the ones that count as your team; the choice is saved and applied at once. From a terminal:
+
+```
+bb review-queue teams
+bb review-queue teams set Teamtailor/platform,Teamtailor/opensearch
+```
+
 ## Settings
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `teams` | `Teamtailor/platform` | GitHub teams whose members count as your team, `org/slug`, comma separated. |
 | `includeTeamRequests` | `true` | Show the third column. |
 | `includeDrafts` | `false` | Include draft PRs. |
 | `refreshMinutes` | `5` | How often to poll GitHub. |
 
 ```
-bb plugin config review-queue set teams "Teamtailor/platform"
+bb plugin config review-queue set includeDrafts true
 bb plugin reload review-queue
 ```
 
@@ -40,6 +48,7 @@ bb plugin reload review-queue
 ```
 bb review-queue list [--json]
 bb review-queue refresh [--json]
+bb review-queue teams [set <org/slug>[,<org/slug>...]] [--json]
 ```
 
 ## Develop

@@ -18,11 +18,13 @@ minutes. It sorts open PRs into three groups:
 | --- | --- |
 | `bb review-queue list` | Show the cached queue. |
 | `bb review-queue refresh` | Fetch from GitHub now, then show the queue. |
+| `bb review-queue teams` | List the user's GitHub teams; `[x]` marks the ones that count as their team. |
+| `bb review-queue teams set <org/slug>[,...]` | Choose the user's team. Only do this when the user asks. |
 
 Add `--json` when the output drives code.
 
 ## Settings
 
-`bb plugin config review-queue` shows them. `teams` is a comma-separated
-`org/slug` list (default `Teamtailor/platform`). Reload the plugin after a change:
-`bb plugin reload review-queue`.
+`bb plugin config review-queue` shows them (drafts, team requests, refresh
+interval). Reload the plugin after a change: `bb plugin reload review-queue`.
+The team choice is not a setting; use `bb review-queue teams set`.
