@@ -6,7 +6,9 @@ A [bb](https://getbb.app) plugin that shows the open GitHub pull requests waitin
 2. **From others:** review requested from you by name, any other author.
 3. **Team review requests:** review requested from one of your selected teams (not you by name), any author.
 
-Each PR shows how long it has waited, CI state, review decision and size. The sidebar badge counts the PRs that ask for you by name and turns yellow when one has waited more than a day.
+Each card shows the repo, author and wait time, a size label (XS to XL) with +/- lines and file count, the first lines of the description, and chips for CI, approvals, conflicts and staleness (no activity for 5 days or more).
+
+**Re-review tracking:** PRs you already reviewed come back to the first two columns, marked in blue, when the author pushed new commits in the last 14 days. A PR where your review was requested again gets a "Re-review" chip. The sidebar badge counts the PRs that ask for you by name and turns yellow when one has waited more than a day.
 
 ## Requirements
 

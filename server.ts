@@ -16,9 +16,16 @@ const prSchema = z.object({
   requestedAt: z.string().nullable(),
   additions: z.number(),
   deletions: z.number(),
+  changedFiles: z.number(),
+  excerpt: z.string(),
+  updatedAt: z.string(),
+  conflicts: z.boolean(),
+  approvals: z.number(),
   checks: z.enum(["success", "failure", "pending", "none"]),
   reviewDecision: z.enum(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", "NONE"]),
-  requestedVia: z.enum(["you", "team"]),
+  myLastReview: z.string().nullable(),
+  newCommitsSinceMyReview: z.boolean(),
+  requestedVia: z.enum(["you", "team", "rereview"]),
   requestedTeams: z.array(z.string()),
   fromTeammate: z.boolean(),
 });
@@ -110,15 +117,21 @@ export const rpcContract = defineRpcContract({
 
 export const QUEUE_CHANGED = "queue-changed";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const REREVIEW_WINDOW_DAYS = 14;
+
 const SEARCH_QUERY = `
-query($q: String!) {
+query($q: String!, $me: String!) {
   search(query: $q, type: ISSUE, first: 50) {
     nodes {
       ... on PullRequest {
-        id number title url isDraft createdAt additions deletions reviewDecision
+        id number title url isDraft createdAt updatedAt additions deletions changedFiles
+        reviewDecision mergeable bodyText
         repository { nameWithOwner }
         author { login avatarUrl }
-        commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+        commits(last: 1) { nodes { commit { oid committedDate statusCheckRollup { state } } } }
+        latestOpinionatedReviews(first: 30) { nodes { state } }
+        myReviews: reviews(author: $me, last: 1) { nodes { state submittedAt commit { oid } } }
         reviewRequests(first: 30) {
           nodes { requestedReviewer {
             __typename
@@ -153,12 +166,24 @@ type RawPr = {
   url: string;
   isDraft: boolean;
   createdAt: string;
+  updatedAt: string;
   additions: number;
   deletions: number;
+  changedFiles: number;
   reviewDecision: string | null;
+  mergeable: string;
+  bodyText: string;
   repository: { nameWithOwner: string };
   author: { login: string; avatarUrl: string } | null;
-  commits: { nodes: { commit: { statusCheckRollup: { state: string } | null } }[] };
+  commits: {
+    nodes: {
+      commit: { oid: string; committedDate: string; statusCheckRollup: { state: string } | null };
+    }[];
+  };
+  latestOpinionatedReviews: { nodes: { state: string }[] };
+  myReviews: {
+    nodes: { state: string; submittedAt: string | null; commit: { oid: string } | null }[];
+  };
   reviewRequests: { nodes: { requestedReviewer: Reviewer | null }[] };
   timelineItems: { nodes: { createdAt?: string; requestedReviewer?: Reviewer | null }[] };
 };
@@ -233,8 +258,17 @@ export default async function plugin(bb: BbPluginApi) {
     });
   }
 
-  async function searchPrs(query: string): Promise<RawPr[]> {
-    const out = await gh(["api", "graphql", "-f", `query=${SEARCH_QUERY}`, "-f", `q=${query}`]);
+  async function searchPrs(query: string, me: string): Promise<RawPr[]> {
+    const out = await gh([
+      "api",
+      "graphql",
+      "-f",
+      `query=${SEARCH_QUERY}`,
+      "-f",
+      `q=${query}`,
+      "-f",
+      `me=${me}`,
+    ]);
     const parsed = JSON.parse(out) as { data: { search: { nodes: Partial<RawPr>[] } } };
     return parsed.data.search.nodes.filter((node): node is RawPr => typeof node.id === "string");
   }
@@ -353,6 +387,15 @@ export default async function plugin(bb: BbPluginApi) {
       .sort((a, b) => a.members - b.members || a.id.localeCompare(b.id));
   }
 
+  // A snapshot cached by an older version can miss fields the RPC schema now
+  // requires, so its PR list is dropped until the next fetch.
+  async function loadCachedSnapshot(): Promise<Partial<Snapshot>> {
+    const cached = await bb.storage.kv.get<Snapshot>("snapshot");
+    if (!cached) return {};
+    const valid = z.array(prSchema).safeParse(cached.pullRequests).success;
+    return valid ? cached : { ...cached, pullRequests: [] };
+  }
+
   let snapshot: Snapshot = {
     login: null,
     availableTeams: [],
@@ -361,7 +404,7 @@ export default async function plugin(bb: BbPluginApi) {
     fetchedAt: null,
     error: null,
     pullRequests: [],
-    ...((await bb.storage.kv.get<Snapshot>("snapshot")) ?? {}),
+    ...(await loadCachedSnapshot()),
     teams,
     teamMaxAgeDays,
     refreshing: false,
@@ -396,19 +439,28 @@ export default async function plugin(bb: BbPluginApi) {
 
     // Search per selected team: review-requested:@me also matches every team
     // you belong to, including org-wide teams, and makes GitHub answer 502.
-    const [direct, teamResults] = await Promise.all([
-      searchPrs(`${base} user-review-requested:@me`),
+    const [direct, teamResults, reviewedByMe] = await Promise.all([
+      searchPrs(`${base} user-review-requested:@me`, login),
       config.includeTeamRequests
-        ? Promise.all(teams.map((team) => searchPrs(`${base} team-review-requested:${team} sort:updated-desc`)))
+        ? Promise.all(
+            teams.map((team) =>
+              searchPrs(`${base} team-review-requested:${team} sort:updated-desc`, login),
+            ),
+          )
         : Promise.resolve([]),
+      searchPrs(`${base} reviewed-by:@me sort:updated-desc`, login),
     ]);
 
     const directIds = new Set(direct.map((pr) => pr.id));
     const teamKeys = new Set(teams.map((team) => `team:${team}`));
     const anyRequest = [...new Map(teamResults.flat().map((pr) => [pr.id, pr])).values()];
 
-    function toPr(raw: RawPr, requestedVia: "you" | "team"): PullRequest {
+    function toPr(raw: RawPr, requestedVia: PullRequest["requestedVia"]): PullRequest {
       const author = raw.author?.login ?? "ghost";
+      const head = raw.commits.nodes[0]?.commit;
+      const myReview = raw.myReviews.nodes.at(-1);
+      const newCommitsSinceMyReview =
+        myReview?.commit != null && head !== undefined && myReview.commit.oid !== head.oid;
       const requested = raw.reviewRequests.nodes
         .map((node) => reviewerKey(node.requestedReviewer))
         .filter((key): key is string => key !== null);
@@ -439,7 +491,18 @@ export default async function plugin(bb: BbPluginApi) {
         authorAvatarUrl: raw.author?.avatarUrl ?? null,
         isDraft: raw.isDraft,
         createdAt: raw.createdAt,
-        requestedAt: events.at(-1)?.createdAt ?? null,
+        requestedAt:
+          requestedVia === "rereview"
+            ? (head?.committedDate ?? null)
+            : (events.at(-1)?.createdAt ?? null),
+        updatedAt: raw.updatedAt,
+        changedFiles: raw.changedFiles,
+        excerpt: raw.bodyText.replace(/\s+/g, " ").trim().slice(0, 240),
+        conflicts: raw.mergeable === "CONFLICTING",
+        approvals: raw.latestOpinionatedReviews.nodes.filter((review) => review.state === "APPROVED")
+          .length,
+        myLastReview: myReview?.state ?? null,
+        newCommitsSinceMyReview,
         additions: raw.additions,
         deletions: raw.deletions,
         checks: checksState(raw),
@@ -462,6 +525,15 @@ export default async function plugin(bb: BbPluginApi) {
       cutoff === null
         ? teamOnly
         : teamOnly.filter((pr) => new Date(pr.requestedAt ?? pr.createdAt).getTime() >= cutoff);
+    const listedIds = new Set([...directIds, ...teamOnly.map((pr) => pr.id)]);
+    const rereviews = reviewedByMe
+      .filter((raw) => !listedIds.has(raw.id))
+      .map((raw) => toPr(raw, "rereview"))
+      .filter(
+        (pr) =>
+          pr.newCommitsSinceMyReview &&
+          new Date(pr.requestedAt ?? 0).getTime() >= Date.now() - REREVIEW_WINDOW_DAYS * DAY_MS,
+      );
 
     return {
       login,
@@ -473,7 +545,7 @@ export default async function plugin(bb: BbPluginApi) {
       fetchedAt: new Date().toISOString(),
       error: null,
       refreshing: false,
-      pullRequests: [...direct.map((raw) => toPr(raw, "you")), ...recentTeamOnly],
+      pullRequests: [...direct.map((raw) => toPr(raw, "you")), ...rereviews, ...recentTeamOnly],
     };
   }
 
@@ -529,19 +601,21 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.background.service("poll", {
     async start(signal) {
+      const aborted = new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => resolve(), { once: true }),
+      );
       while (!signal.aborted) {
-        await refresh();
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, refreshMs);
-          signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true },
-          );
-        });
+        // A GitHub fetch can outlast bb's stop window, so never block the stop on it.
+        await Promise.race([refresh(), aborted]);
+        if (signal.aborted) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, refreshMs);
+          }),
+          aborted,
+        ]);
+        clearTimeout(timer);
       }
     },
   });
@@ -556,7 +630,14 @@ export default async function plugin(bb: BbPluginApi) {
   ].join("\n");
 
   function formatPr(pr: PullRequest): string {
-    const via = pr.requestedVia === "team" ? ` (via ${pr.requestedTeams.join(", ")})` : "";
+    const via =
+      pr.requestedVia === "team"
+        ? ` (via ${pr.requestedTeams.join(", ")})`
+        : pr.requestedVia === "rereview"
+          ? " [new commits since your review]"
+          : pr.myLastReview
+            ? " [re-review]"
+            : "";
     return `${pr.repo}#${pr.number}  ${pr.title}  by @${pr.author}${via}  ${pr.url}`;
   }
 
@@ -564,11 +645,11 @@ export default async function plugin(bb: BbPluginApi) {
     const groups: [string, PullRequest[]][] = [
       [
         "From your team",
-        snap.pullRequests.filter((pr) => pr.requestedVia === "you" && pr.fromTeammate),
+        snap.pullRequests.filter((pr) => pr.requestedVia !== "team" && pr.fromTeammate),
       ],
       [
         "From others",
-        snap.pullRequests.filter((pr) => pr.requestedVia === "you" && !pr.fromTeammate),
+        snap.pullRequests.filter((pr) => pr.requestedVia !== "team" && !pr.fromTeammate),
       ],
       [
         "Team review requests",

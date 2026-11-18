@@ -10,6 +10,7 @@ minutes. It sorts open PRs into three groups:
 
 1. From your team: review requested from the user by name, author is in a configured team.
 2. From others: review requested from the user by name, any other author.
+   Groups 1 and 2 also hold PRs the user already reviewed that got new commits in the last 14 days, marked `[new commits since your review]`. `[re-review]` marks a PR where the user's review was requested again.
 3. Team review requests: review requested from one of the user's selected teams (not the user by name), any author.
 
 ## Commands

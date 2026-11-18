@@ -172,14 +172,14 @@ function sections(snapshot: Snapshot) {
     {
       id: "team",
       title: "From your team",
-      hint: "Your review is requested directly.",
-      prs: newestFirst(prs.filter((pr) => pr.requestedVia === "you" && pr.fromTeammate)),
+      hint: "Requested from you by name, or new commits since your review.",
+      prs: newestFirst(prs.filter((pr) => pr.requestedVia !== "team" && pr.fromTeammate)),
     },
     {
       id: "others",
       title: "From others",
-      hint: "Your review is requested directly.",
-      prs: newestFirst(prs.filter((pr) => pr.requestedVia === "you" && !pr.fromTeammate)),
+      hint: "Requested from you by name, or new commits since your review.",
+      prs: newestFirst(prs.filter((pr) => pr.requestedVia !== "team" && !pr.fromTeammate)),
     },
     {
       id: "team-requests",
@@ -193,39 +193,89 @@ function sections(snapshot: Snapshot) {
   ];
 }
 
-function ChecksIcon({ checks }: { checks: PullRequest["checks"] }) {
-  if (checks === "none") return null;
-  const map = {
-    success: { name: "CircleCheck", className: "text-emerald-500", label: "Checks passed" },
-    failure: { name: "CircleX", className: "text-destructive", label: "Checks failed" },
-    pending: { name: "CircleDashed", className: "text-amber-500", label: "Checks running" },
-  } as const;
-  const { name, className, label } = map[checks];
+const STALE_DAYS = 5;
+
+function sizeLabel(pr: PullRequest): string {
+  const lines = pr.additions + pr.deletions;
+  if (lines < 10) return "XS";
+  if (lines < 50) return "S";
+  if (lines < 250) return "M";
+  if (lines < 1000) return "L";
+  return "XL";
+}
+
+function compact(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(value);
+}
+
+type ChipTone = "neutral" | "good" | "bad" | "warn" | "info";
+
+function Chip({ tone = "neutral", icon, children }: { tone?: ChipTone; icon?: string; children: ReactNode }) {
   return (
-    <span title={label} aria-label={label} className="inline-flex">
-      <Icon name={name} className={cn("size-3.5", className)} />
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 rounded px-1.5 py-px text-[11px] leading-4",
+        tone === "neutral" && "bg-muted text-muted-foreground",
+        tone === "good" && "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+        tone === "bad" && "bg-destructive/10 text-destructive",
+        tone === "warn" && "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+        tone === "info" && "bg-sky-500/10 text-sky-700 dark:text-sky-400",
+      )}
+    >
+      {icon ? <Icon name={icon} className="size-3" /> : null}
+      {children}
     </span>
   );
 }
 
-function DecisionTag({ decision }: { decision: PullRequest["reviewDecision"] }) {
-  if (decision === "APPROVED")
-    return <Tag className="text-emerald-600 dark:text-emerald-400">Approved</Tag>;
-  if (decision === "CHANGES_REQUESTED")
-    return <Tag className="text-destructive">Changes requested</Tag>;
-  return null;
-}
-
-function Tag({ children, className }: { children: ReactNode; className?: string }) {
+function PrChips({ pr, now }: { pr: PullRequest; now: number }) {
+  const staleDays = Math.floor((now - new Date(pr.updatedAt ?? pr.createdAt).getTime()) / DAY_MS);
   return (
-    <span
-      className={cn(
-        "rounded border border-border px-1.5 py-px text-[11px] leading-4",
-        className,
+    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+      {pr.requestedVia === "rereview" ? (
+        <Chip tone="info" icon="RotateCcw">
+          New commits since your {pr.myLastReview === "APPROVED" ? "approval" : "review"}
+        </Chip>
+      ) : pr.myLastReview ? (
+        <Chip tone="info" icon="RotateCcw">
+          Re-review
+        </Chip>
+      ) : null}
+      {pr.isDraft ? <Chip>Draft</Chip> : null}
+      {pr.conflicts ? (
+        <Chip tone="bad" icon="TriangleAlert">
+          Conflicts
+        </Chip>
+      ) : null}
+      {pr.checks === "success" ? (
+        <Chip tone="good" icon="Check">
+          CI
+        </Chip>
+      ) : pr.checks === "failure" ? (
+        <Chip tone="bad" icon="X">
+          CI
+        </Chip>
+      ) : pr.checks === "pending" ? (
+        <Chip tone="warn" icon="CircleDashed">
+          CI
+        </Chip>
+      ) : null}
+      {pr.reviewDecision === "CHANGES_REQUESTED" ? (
+        <Chip tone="bad">Changes requested</Chip>
+      ) : (pr.approvals ?? 0) > 0 ? (
+        <Chip tone="good" icon="Check">
+          {pr.approvals} approved
+        </Chip>
+      ) : (
+        <Chip>No approvals</Chip>
       )}
-    >
-      {children}
-    </span>
+      {staleDays >= STALE_DAYS ? (
+        <Chip icon="Hourglass">Stale {staleDays}d</Chip>
+      ) : null}
+      {pr.requestedVia === "team" && pr.requestedTeams.length > 0 ? (
+        <Chip>via {pr.requestedTeams.map((team) => team.split("/")[1]).join(", ")}</Chip>
+      ) : null}
+    </div>
   );
 }
 
@@ -234,53 +284,57 @@ function PrRow({ pr, now }: { pr: PullRequest; now: number }) {
   const stale = now - new Date(since).getTime() > DAY_MS;
   const navigate = useBbNavigate();
   const openInBb = () => navigate.toPluginPanel("queue", { subPath: `pr/${pr.repo}/${pr.number}` });
+  const files = pr.changedFiles ?? 0;
   return (
-    <li className="group flex items-start gap-3 py-3">
-      {pr.authorAvatarUrl ? (
-        <img
-          src={pr.authorAvatarUrl}
-          alt=""
-          className="mt-0.5 size-7 shrink-0 rounded-full border border-border"
-        />
-      ) : (
-        <div className="mt-0.5 size-7 shrink-0 rounded-full bg-muted" />
+    <li
+      className={cn(
+        "py-3",
+        pr.requestedVia === "rereview" && "-ml-3 border-l-2 border-sky-500 pl-2.5",
       )}
-      <div className="min-w-0 flex-1">
-        <button
-          type="button"
-          onClick={openInBb}
-          className="line-clamp-2 text-left text-sm font-medium text-foreground hover:underline"
-        >
-          {pr.title}
-        </button>
-        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <span className="font-mono">
-            {pr.repo.split("/")[1]}#{pr.number}
-          </span>
-          <span>@{pr.author}</span>
-          <span>
-            <span className="text-emerald-600 dark:text-emerald-400">+{pr.additions}</span>{" "}
-            <span className="text-destructive">−{pr.deletions}</span>
-          </span>
-          <ChecksIcon checks={pr.checks} />
-          <DecisionTag decision={pr.reviewDecision} />
-          {pr.isDraft ? <Tag>Draft</Tag> : null}
-          {pr.requestedVia === "team" && pr.requestedTeams.length > 0 ? (
-            <Tag>via {pr.requestedTeams.map((team) => team.split("/")[1]).join(", ")}</Tag>
-          ) : null}
-        </div>
-      </div>
-      <div className="flex shrink-0 flex-col items-end gap-1">
+    >
+      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+        <span className="truncate font-mono">
+          {pr.repo.split("/")[1]} #{pr.number}
+        </span>
+        <span aria-hidden>·</span>
+        {pr.authorAvatarUrl ? (
+          <img src={pr.authorAvatarUrl} alt="" className="size-4 shrink-0 rounded-full" />
+        ) : null}
+        <span className="truncate">{pr.author}</span>
+        <span aria-hidden>·</span>
         <span
           title={`Waiting since ${new Date(since).toLocaleString()}`}
           className={cn(
-            "tabular-nums text-xs",
-            stale ? "font-medium text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+            "shrink-0 tabular-nums",
+            stale && "font-medium text-amber-600 dark:text-amber-400",
           )}
         >
           {age(since, now)}
         </span>
-        <div className="flex items-center gap-1">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5 tabular-nums">
+          <span className="rounded border border-border px-1 text-[10px] font-medium">
+            {sizeLabel(pr)}
+          </span>
+          <span className="text-emerald-600 dark:text-emerald-400">+{compact(pr.additions)}</span>
+          <span className="text-destructive">−{compact(pr.deletions)}</span>
+          {files > 0 ? <span>{files === 1 ? "1 file" : `${files} files`}</span> : null}
+        </span>
+      </div>
+      <button
+        type="button"
+        onClick={openInBb}
+        className="mt-0.5 line-clamp-2 text-left text-sm font-medium leading-snug text-foreground hover:underline"
+      >
+        {pr.title}
+      </button>
+      {pr.excerpt ? (
+        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{pr.excerpt}</p>
+      ) : null}
+      <div className="flex items-end gap-2">
+        <div className="min-w-0 flex-1">
+          <PrChips pr={pr} now={now} />
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           <Button
             variant="outline"
             size="sm"
@@ -407,7 +461,7 @@ function useQueueBadge() {
   const { snapshot } = useQueue();
   const now = useNow();
   if (!snapshot) return null;
-  const direct = snapshot.pullRequests.filter((pr) => pr.requestedVia === "you");
+  const direct = snapshot.pullRequests.filter((pr) => pr.requestedVia !== "team");
   if (direct.length === 0) return null;
   const stale = direct.some((pr) => now - new Date(waitingSince(pr)).getTime() > DAY_MS);
   return {
