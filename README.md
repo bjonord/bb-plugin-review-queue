@@ -21,6 +21,10 @@ npm install
 bb plugin install .
 ```
 
+## Review in bb
+
+Click a PR title or its **Review** button to open it inside bb: the description, every changed file in bb's diff viewer (unified or split), and a review box with **Approve**, **Request changes** and **Comment**. The review is sent with your `gh` login and recorded against the commit you were looking at. If new commits arrived in the meantime, GitHub shows your review as being on that older commit. The arrow icon opens the PR on GitHub instead.
+
 ## Your team
 
 The page lists your GitHub teams as toggles. Click the ones that count as your team; the choice is saved and applied at once. From a terminal:

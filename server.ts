@@ -52,7 +52,50 @@ const snapshotSchema = z.object({
 });
 export type Snapshot = z.infer<typeof snapshotSchema>;
 
+const prRefSchema = z.object({
+  repo: z.string().regex(/^[\w.-]+\/[\w.-]+$/),
+  number: z.number().int().positive(),
+});
+
+const prFileSchema = z.object({
+  path: z.string(),
+  previousPath: z.string().nullable(),
+  status: z.string(),
+  additions: z.number(),
+  deletions: z.number(),
+  patch: z.string().nullable(),
+});
+export type PrFile = z.infer<typeof prFileSchema>;
+
+const reviewEventSchema = z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]);
+export type ReviewEvent = z.infer<typeof reviewEventSchema>;
+
+const prDetailSchema = z.object({
+  repo: z.string(),
+  number: z.number(),
+  title: z.string(),
+  body: z.string(),
+  url: z.string(),
+  author: z.string(),
+  state: z.string(),
+  headSha: z.string(),
+  baseRef: z.string(),
+  headRef: z.string(),
+  myReview: z.string().nullable(),
+  files: z.array(prFileSchema),
+});
+export type PrDetail = z.infer<typeof prDetailSchema>;
+
 export const rpcContract = defineRpcContract({
+  pr_detail: { input: prRefSchema, output: prDetailSchema },
+  pr_review: {
+    input: prRefSchema.extend({
+      event: reviewEventSchema,
+      body: z.string().max(60_000),
+      headSha: z.string().regex(/^[0-9a-f]{40}$/),
+    }),
+    output: z.object({ state: z.string(), url: z.string() }),
+  },
   queue_get: { input: z.null(), output: snapshotSchema },
   queue_refresh: { input: z.null(), output: snapshotSchema },
   team_age_set: {
@@ -194,6 +237,82 @@ export default async function plugin(bb: BbPluginApi) {
     const out = await gh(["api", "graphql", "-f", `query=${SEARCH_QUERY}`, "-f", `q=${query}`]);
     const parsed = JSON.parse(out) as { data: { search: { nodes: Partial<RawPr>[] } } };
     return parsed.data.search.nodes.filter((node): node is RawPr => typeof node.id === "string");
+  }
+
+  async function prDetail(repo: string, number: number): Promise<PrDetail> {
+    const base = `repos/${repo}/pulls/${number}`;
+    const [prOut, filesOut, reviewsOut, loginOut] = await Promise.all([
+      gh([
+        "api",
+        base,
+        "--jq",
+        "{title, body, url: .html_url, author: .user.login, state, headSha: .head.sha, baseRef: .base.ref, headRef: .head.ref}",
+      ]),
+      gh([
+        "api",
+        "--paginate",
+        `${base}/files?per_page=100`,
+        "--jq",
+        ".[] | {path: .filename, previousPath: .previous_filename, status, additions, deletions, patch}",
+      ]),
+      gh(["api", "--paginate", `${base}/reviews?per_page=100`, "--jq", ".[] | {user: .user.login, state}"]),
+      snapshot.login ? Promise.resolve(snapshot.login) : gh(["api", "user", "--jq", ".login"]),
+    ]);
+    const pr = JSON.parse(prOut) as Omit<PrDetail, "repo" | "number" | "files" | "myReview"> & {
+      body: string | null;
+    };
+    const jsonLines = <T>(out: string): T[] =>
+      out
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => JSON.parse(line) as T);
+    const files = jsonLines<Partial<PrFile>>(filesOut).map((file) => ({
+      path: file.path ?? "",
+      previousPath: file.previousPath ?? null,
+      status: file.status ?? "modified",
+      additions: file.additions ?? 0,
+      deletions: file.deletions ?? 0,
+      patch: file.patch ?? null,
+    }));
+    const me = loginOut.trim().toLowerCase();
+    const mine = jsonLines<{ user: string | null; state: string }>(reviewsOut).filter(
+      (review) => review.user?.toLowerCase() === me && review.state !== "COMMENTED",
+    );
+    return {
+      ...pr,
+      body: pr.body ?? "",
+      repo,
+      number,
+      myReview: mine.at(-1)?.state ?? null,
+      files,
+    };
+  }
+
+  async function submitReview(input: {
+    repo: string;
+    number: number;
+    event: ReviewEvent;
+    body: string;
+    headSha: string;
+  }): Promise<{ state: string; url: string }> {
+    const body = input.body.trim();
+    if (input.event !== "APPROVE" && body === "")
+      throw new Error("Write a comment first: GitHub needs one for this review type.");
+    const args = [
+      "api",
+      "-X",
+      "POST",
+      `repos/${input.repo}/pulls/${input.number}/reviews`,
+      "-f",
+      `event=${input.event}`,
+      "-f",
+      `commit_id=${input.headSha}`,
+    ];
+    if (body !== "") args.push("-f", `body=${body}`);
+    const out = await gh([...args, "--jq", "{state, url: .html_url}"]);
+    bb.log.info(`review ${input.event} on ${input.repo}#${input.number}`);
+    void refresh();
+    return JSON.parse(out) as { state: string; url: string };
   }
 
   async function teamMembers(team: string): Promise<string[]> {
@@ -404,6 +523,8 @@ export default async function plugin(bb: BbPluginApi) {
     queue_refresh: () => refresh(),
     teams_set: ({ teams: next }) => setTeams(next),
     team_age_set: ({ days }) => setTeamAge(days),
+    pr_detail: ({ repo, number }) => prDetail(repo, number),
+    pr_review: (input) => submitReview(input),
   });
 
   bb.background.service("poll", {

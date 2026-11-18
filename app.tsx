@@ -3,9 +3,11 @@ import type { ReactNode } from "react";
 import {
   UrlLink,
   definePluginApp,
+  useBbNavigate,
   useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
+import { PrReviewPage, parsePrSubPath } from "./pr-review";
 import type { PullRequest, Snapshot, rpcContract } from "./server";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
@@ -230,8 +232,10 @@ function Tag({ children, className }: { children: ReactNode; className?: string 
 function PrRow({ pr, now }: { pr: PullRequest; now: number }) {
   const since = waitingSince(pr);
   const stale = now - new Date(since).getTime() > DAY_MS;
+  const navigate = useBbNavigate();
+  const openInBb = () => navigate.toPluginPanel("queue", { subPath: `pr/${pr.repo}/${pr.number}` });
   return (
-    <li className="flex items-start gap-3 py-3">
+    <li className="group flex items-start gap-3 py-3">
       {pr.authorAvatarUrl ? (
         <img
           src={pr.authorAvatarUrl}
@@ -242,12 +246,13 @@ function PrRow({ pr, now }: { pr: PullRequest; now: number }) {
         <div className="mt-0.5 size-7 shrink-0 rounded-full bg-muted" />
       )}
       <div className="min-w-0 flex-1">
-        <UrlLink
-          href={pr.url}
-          className="line-clamp-2 text-sm font-medium text-foreground hover:underline"
+        <button
+          type="button"
+          onClick={openInBb}
+          className="line-clamp-2 text-left text-sm font-medium text-foreground hover:underline"
         >
           {pr.title}
-        </UrlLink>
+        </button>
         <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <span className="font-mono">
             {pr.repo.split("/")[1]}#{pr.number}
@@ -265,15 +270,37 @@ function PrRow({ pr, now }: { pr: PullRequest; now: number }) {
           ) : null}
         </div>
       </div>
-      <span
-        title={`Waiting since ${new Date(since).toLocaleString()}`}
-        className={cn(
-          "shrink-0 tabular-nums text-xs",
-          stale ? "font-medium text-amber-600 dark:text-amber-400" : "text-muted-foreground",
-        )}
-      >
-        {age(since, now)}
-      </span>
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        <span
+          title={`Waiting since ${new Date(since).toLocaleString()}`}
+          className={cn(
+            "tabular-nums text-xs",
+            stale ? "font-medium text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+          )}
+        >
+          {age(since, now)}
+        </span>
+        <div className="flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-6 px-2 text-xs"
+            onClick={openInBb}
+            aria-label={`Review ${pr.repo}#${pr.number} in bb`}
+          >
+            <Icon name="FileDiff" className="size-3.5" />
+            Review
+          </Button>
+          <UrlLink
+            href={pr.url}
+            title="Open on GitHub"
+            aria-label={`Open ${pr.repo}#${pr.number} on GitHub`}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Icon name="ExternalLink" className="size-3.5" />
+          </UrlLink>
+        </div>
+      </div>
     </li>
   );
 }
@@ -309,7 +336,13 @@ function RefreshButton() {
   );
 }
 
-function QueuePage() {
+function QueuePage({ subPath }: { subPath: string }) {
+  const pr = parsePrSubPath(subPath);
+  if (pr) return <PrReviewPage key={`${pr.repo}#${pr.number}`} repo={pr.repo} number={pr.number} />;
+  return <QueueList />;
+}
+
+function QueueList() {
   const { snapshot, error, setTeams, setTeamAge } = useQueue();
   const now = useNow();
   const shownError = error ?? snapshot?.error ?? null;
