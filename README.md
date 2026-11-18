@@ -31,7 +31,7 @@ The page lists your GitHub teams as toggles. Click the ones that count as your t
 
 ```
 bb review-queue teams
-bb review-queue teams set Teamtailor/platform,Teamtailor/opensearch
+bb review-queue teams set my-org/backend,my-org/infra
 ```
 
 ## Old team requests

@@ -395,7 +395,7 @@ export default async function plugin(bb: BbPluginApi) {
     teammates.delete(me);
 
     // Search per selected team: review-requested:@me also matches every team
-    // you belong to (Developers has 66 people) and makes GitHub answer 502.
+    // you belong to, including org-wide teams, and makes GitHub answer 502.
     const [direct, teamResults] = await Promise.all([
       searchPrs(`${base} user-review-requested:@me`),
       config.includeTeamRequests
