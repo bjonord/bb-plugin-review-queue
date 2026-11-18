@@ -71,16 +71,19 @@ function ReviewBox({
   onDone,
 }: {
   detail: PrDetail;
-  onDone: (state: string) => void;
+  onDone: () => void;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [body, setBody] = useState("");
   const [pending, setPending] = useState<ReviewEvent | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sent, setSent] = useState<{ state: string; url: string } | null>(null);
+  const navigate = useBbNavigate();
   const submit = (event: ReviewEvent) => {
     if (pending) return;
     setPending(event);
     setError(null);
+    setSent(null);
     rpc
       .call("pr_review", {
         repo: detail.repo,
@@ -92,7 +95,8 @@ function ReviewBox({
       .then(
         (result) => {
           setBody("");
-          onDone(result.state);
+          setSent(result);
+          onDone();
         },
         (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
       )
@@ -111,9 +115,13 @@ function ReviewBox({
           className="w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         />
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => submit("APPROVE")} disabled={pending !== null}>
+          <Button
+            size="sm"
+            onClick={() => submit("APPROVE")}
+            disabled={pending !== null || sent?.state === "APPROVED"}
+          >
             <Icon name="Check" className="size-4" />
-            {pending === "APPROVE" ? "Approving…" : "Approve"}
+            {pending === "APPROVE" ? "Approving…" : sent?.state === "APPROVED" ? "Approved" : "Approve"}
           </Button>
           <Button
             size="sm"
@@ -143,6 +151,29 @@ function ReviewBox({
             {error}
           </p>
         ) : null}
+        {sent ? (
+          <p
+            role="status"
+            className="flex flex-wrap items-center gap-2 rounded-md bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400"
+          >
+            <Icon name="CircleCheck" className="size-4" />
+            {sent.state === "APPROVED"
+              ? "Approved on GitHub."
+              : sent.state === "CHANGES_REQUESTED"
+                ? "Changes requested on GitHub."
+                : "Comment posted on GitHub."}
+            <UrlLink href={sent.url} className="underline">
+              View review
+            </UrlLink>
+            <button
+              type="button"
+              onClick={() => navigate.toPluginPanel("queue")}
+              className="ml-auto text-xs underline"
+            >
+              Back to queue
+            </button>
+          </p>
+        ) : null}
       </div>
     </div>
   );
@@ -154,7 +185,6 @@ export function PrReviewPage({ repo, number }: { repo: string; number: number })
   const [detail, setDetail] = useState<PrDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"unified" | "split">("unified");
-  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(() => {
     rpc.call("pr_detail", { repo, number }).then(
@@ -230,11 +260,6 @@ export function PrReviewPage({ repo, number }: { repo: string; number: number })
                   </UrlLink>
                 </div>
               </header>
-              {notice ? (
-                <p role="status" className="rounded-md border border-border bg-card px-3 py-2 text-sm">
-                  {notice}
-                </p>
-              ) : null}
               {detail.body.trim() !== "" ? (
                 <details className="rounded-lg border border-border bg-card px-4 py-3">
                   <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
@@ -281,16 +306,7 @@ export function PrReviewPage({ repo, number }: { repo: string; number: number })
       {detail && detail.state === "open" ? (
         <ReviewBox
           detail={detail}
-          onDone={(state) => {
-            setNotice(
-              state === "APPROVED"
-                ? "Approved on GitHub."
-                : state === "CHANGES_REQUESTED"
-                  ? "Changes requested on GitHub."
-                  : "Comment posted on GitHub.",
-            );
-            load();
-          }}
+          onDone={load}
         />
       ) : null}
     </div>
