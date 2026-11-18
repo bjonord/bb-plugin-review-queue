@@ -145,7 +145,7 @@ export default async function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Show team requests from teammates",
       description:
-        "Also list PRs by teammates where review was requested from one of your teams, not from you.",
+        "Also list PRs where review was requested from one of your selected teams, not from you by name.",
       default: true,
     },
     includeDrafts: {
@@ -248,7 +248,7 @@ export default async function plugin(bb: BbPluginApi) {
     const me = login.toLowerCase();
     const myKey = `user:${me}`;
     const draft = config.includeDrafts ? "" : " draft:false";
-    const base = `is:pr is:open archived:false${draft}`;
+    const base = `is:pr is:open archived:false -author:@me${draft}`;
 
     const availableTeams = await myTeams().catch((error: unknown) => {
       bb.log.warn(`team list lookup failed: ${String(error)}`);
@@ -265,31 +265,35 @@ export default async function plugin(bb: BbPluginApi) {
     const teammates = new Set(memberLists.flat());
     teammates.delete(me);
 
-    // An unfiltered review-requested:@me search can return hundreds of
-    // team-level requests and makes GitHub answer 502, so limit it to teammates.
-    const authorFilter = [...teammates].map((login) => `author:${login}`).join(" ");
-    const [direct, anyRequest] = await Promise.all([
+    // Search per selected team: review-requested:@me also matches every team
+    // you belong to (Developers has 66 people) and makes GitHub answer 502.
+    const [direct, teamResults] = await Promise.all([
       searchPrs(`${base} user-review-requested:@me`),
-      config.includeTeamRequests && teammates.size > 0
-        ? searchPrs(`${base} review-requested:@me ${authorFilter}`)
+      config.includeTeamRequests
+        ? Promise.all(teams.map((team) => searchPrs(`${base} team-review-requested:${team}`)))
         : Promise.resolve([]),
     ]);
 
     const directIds = new Set(direct.map((pr) => pr.id));
     const teamKeys = new Set(teams.map((team) => `team:${team}`));
+    const anyRequest = [...new Map(teamResults.flat().map((pr) => [pr.id, pr])).values()];
 
     function toPr(raw: RawPr, requestedVia: "you" | "team"): PullRequest {
       const author = raw.author?.login ?? "ghost";
       const requested = raw.reviewRequests.nodes
         .map((node) => reviewerKey(node.requestedReviewer))
         .filter((key): key is string => key !== null);
-      const requestedTeams = requested
-        .filter((key) => key.startsWith("team:"))
-        .map((key) => key.slice("team:".length));
+      const requestedTeams = [
+        ...new Set(
+          requested
+            .filter((key) => key.startsWith("team:"))
+            .map((key) => key.slice("team:".length)),
+        ),
+      ];
       const relevant =
         requestedVia === "you"
           ? new Set([myKey])
-          : new Set(requested.filter((key) => key.startsWith("team:")));
+          : teamKeys;
       const events = raw.timelineItems.nodes.filter(
         (event) =>
           event.createdAt !== undefined &&
@@ -322,11 +326,7 @@ export default async function plugin(bb: BbPluginApi) {
     const teamOnly = anyRequest
       .filter((raw) => !directIds.has(raw.id))
       .map((raw) => toPr(raw, "team"))
-      .filter(
-        (pr) =>
-          pr.fromTeammate &&
-          (teamKeys.size === 0 || pr.requestedTeams.some((team) => teamKeys.has(`team:${team}`))),
-      );
+      .filter((pr) => pr.requestedTeams.some((team) => teamKeys.has(`team:${team}`)));
 
     return {
       login,
@@ -422,7 +422,7 @@ export default async function plugin(bb: BbPluginApi) {
         snap.pullRequests.filter((pr) => pr.requestedVia === "you" && !pr.fromTeammate),
       ],
       [
-        "Team requests from teammates",
+        "Team review requests",
         snap.pullRequests.filter((pr) => pr.requestedVia === "team"),
       ],
     ];

@@ -4,7 +4,7 @@ A [bb](https://getbb.app) plugin that shows the open GitHub pull requests waitin
 
 1. **From your team:** review requested from you by name, author is in one of your configured teams.
 2. **From others:** review requested from you by name, any other author.
-3. **Team requests from teammates:** review requested from one of your teams, author is a teammate.
+3. **Team review requests:** review requested from one of your selected teams (not you by name), any author.
 
 Each PR shows how long it has waited, CI state, review decision and size. The sidebar badge counts the PRs that ask for you by name and turns yellow when one has waited more than a day.
 

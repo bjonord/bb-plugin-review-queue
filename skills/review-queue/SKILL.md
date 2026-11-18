@@ -10,7 +10,7 @@ minutes. It sorts open PRs into three groups:
 
 1. From your team: review requested from the user by name, author is in a configured team.
 2. From others: review requested from the user by name, any other author.
-3. Team requests from teammates: review requested from one of the user's teams, author is a teammate.
+3. Team review requests: review requested from one of the user's selected teams (not the user by name), any author.
 
 ## Commands
 

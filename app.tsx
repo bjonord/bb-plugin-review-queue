@@ -128,8 +128,8 @@ function sections(snapshot: Snapshot) {
     },
     {
       id: "team-requests",
-      title: "Team requests from teammates",
-      hint: "Requested from one of your teams, not from you by name.",
+      title: "Team review requests",
+      hint: "Requested from your selected teams, any author.",
       prs: oldestFirst(prs.filter((pr) => pr.requestedVia === "team")),
     },
   ];
